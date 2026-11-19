@@ -57,6 +57,17 @@ def _env_list(name: str, default: list[str]) -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
+def load_local_env(path: str | Path = ".env") -> bool:
+    """Load KEY=VALUE pairs from a local .env (git-ignored) into the environment.
+
+    Real environment variables always win (override=False). Returns True if a file was read.
+    """
+    from dotenv import load_dotenv
+
+    candidate = Path(path)
+    return bool(candidate.is_file() and load_dotenv(candidate, override=False))
+
+
 def is_loopback_host(host: str) -> bool:
     if host in {"localhost"}:
         return True
@@ -84,6 +95,9 @@ class Settings:
     pin_max_failures: int
     pin_lockout_seconds: int
     audit_dir: Path
+    allow_emergency: bool
+    """Opt-in for the narrow emergency lineup exception (executes WITHOUT human approval)."""
+    emergency_max_per_gameweek: int
 
     # --- network ------------------------------------------------------------------------
     web_host: str
@@ -119,6 +133,10 @@ def get_settings() -> Settings:
         pin_max_failures=_env_int("FPL_PIN_MAX_FAILURES", 5, minimum=1, maximum=100),
         pin_lockout_seconds=_env_int("FPL_PIN_LOCKOUT_SECONDS", 900, minimum=30, maximum=86400),
         audit_dir=Path(os.environ.get("FPL_AUDIT_DIR", "audit")),
+        allow_emergency=_env_bool("FPL_ALLOW_EMERGENCY", False),
+        emergency_max_per_gameweek=_env_int(
+            "FPL_EMERGENCY_MAX_PER_GAMEWEEK", 2, minimum=1, maximum=5
+        ),
         web_host=web_host,
         web_port=web_port,
         mcp_host=os.environ.get("FPL_MCP_HOST", "127.0.0.1"),
@@ -174,6 +192,11 @@ def validate_for_startup(settings: Settings) -> list[str]:
     if settings.allow_writes and settings.approval_pin is None:
         raise ConfigError("FPL_ALLOW_WRITES=true requires FPL_APPROVAL_PIN to be set.")
 
+    if settings.allow_emergency:
+        warnings.append(
+            "FPL_ALLOW_EMERGENCY is ON: a verified emergency lineup swap inside the last 15 "
+            "minutes before the deadline executes WITHOUT human approval."
+        )
     if settings.approval_pin is None:
         warnings.append("No FPL_APPROVAL_PIN set: proposals can be created but never approved.")
     if not settings.allow_writes:

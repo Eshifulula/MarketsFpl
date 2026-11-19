@@ -57,6 +57,7 @@ class PlayerInfo:
     status: str = "a"
     news: str = ""
     aliases: tuple[str, ...] = ()
+    chance_next: int | None = None  # FPL chance_of_playing_next_round (None = no flag)
 
     @property
     def pos_name(self) -> str:

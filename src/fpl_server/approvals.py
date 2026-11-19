@@ -37,8 +37,9 @@ EXECUTING = "executing"
 EXECUTED = "executed"
 DRY_RUN = "dry_run"
 FAILED = "failed"
+UNKNOWN = "outcome_unknown"  # request was sent; FPL may or may not have applied it
 
-_TERMINAL = {REJECTED, EXPIRED, EXECUTED, DRY_RUN, FAILED}
+_TERMINAL = {REJECTED, EXPIRED, EXECUTED, DRY_RUN, FAILED, UNKNOWN}
 
 
 class ApprovalError(Exception):
@@ -68,7 +69,9 @@ class AuditLog:
         self._dir = directory
         self._lock = threading.Lock()
 
-    def record(self, name: str, /, **fields: Any) -> None:
+    def record(self, name: str, /, **fields: Any) -> bool:
+        """Append one entry. Returns False if it could not be written (callers on the emergency
+        path treat that as a refusal)."""
         entry = {"ts": datetime.now(UTC).isoformat(timespec="seconds"), "event": name, **fields}
         line = json.dumps(entry, default=str, separators=(",", ":"))
         with self._lock:
@@ -81,8 +84,9 @@ class AuditLog:
                 path = self._dir / f"audit-{datetime.now(UTC):%Y-%m}.audit.jsonl"
                 with path.open("a", encoding="utf-8") as handle:
                     handle.write(line + "\n")
-            except OSError:  # pragma: no cover - never let logging break the safety path
-                pass
+                return True
+            except OSError:  # pragma: no cover - callers on the emergency path refuse on False
+                return False
 
 
 @dataclass
@@ -130,6 +134,10 @@ class ProposalStore:
         self._failures = 0
         self._locked_until = 0.0
 
+    @property
+    def audit(self) -> AuditLog:
+        return self._audit
+
     # ----- creation / lookup ---------------------------------------------------------
     def create(
         self,
@@ -148,7 +156,9 @@ class ProposalStore:
         with self._lock:
             self._purge(now)
             for old in self._proposals.values():
-                if old.status == PENDING:  # one outstanding proposal at a time
+                # One live proposal at a time: a newer one cancels both a waiting AND an
+                # already-approved-but-unexecuted older one, so two approvals can never race.
+                if old.status in {PENDING, APPROVED}:
                     self._set(old, REJECTED, "superseded by a newer proposal")
             proposal = Proposal(
                 id=secrets.token_urlsafe(12),

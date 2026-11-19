@@ -10,18 +10,22 @@ immediately before sending (drift guard).
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from datetime import UTC, datetime
 
 from .approvals import (
     DRY_RUN,
     EXECUTED,
     FAILED,
+    UNKNOWN,
     ApprovalError,
     Proposal,
     squad_fingerprint,
 )
 from .client import FPLAPIError, FPLAuthExpired
 from .config import Settings, get_settings
+from .emergency import parse_deadline
 from .mcp_tools import _get_client, mcp
 from .rules import (
     TEAM_CHIPS,
@@ -36,10 +40,15 @@ from .rules import (
     validate_lineup,
     validate_transfers,
 )
-from .runtime import get_proposals
+from .runtime import execution_lock, get_proposals
 from .state import store
 
 logger = logging.getLogger("fpl_write_tools")
+
+
+def _now() -> datetime:
+    """Server clock. Indirected so tests can pin time."""
+    return datetime.now(UTC)
 
 
 # --------------------------------------------------------------------------- context ------
@@ -92,6 +101,7 @@ def _players_from_bootstrap() -> dict[int, PlayerInfo]:
             status=e.status,
             news=e.news or "",
             aliases=tuple(sorted(aliases)),
+            chance_next=getattr(e, "chance_of_playing_next_round", None),
         )
     return out
 
@@ -151,7 +161,16 @@ async def get_write_policy() -> dict:
         "max_points_hit": s.max_points_hit,
         "proposal_expires_after_seconds": s.proposal_ttl_seconds,
         "execute_within_seconds_of_approval": s.execute_window_seconds,
-        "rule": "Every change needs a human to approve it with a PIN on the local approval page.",
+        "emergency_exception_enabled": s.allow_emergency,
+        "emergency_max_per_gameweek": s.emergency_max_per_gameweek,
+        "rule": (
+            "Every change needs a human to approve it with a PIN on the local approval page"
+            + (
+                ", except a verified emergency lineup swap in the last 15 minutes before the deadline."
+                if s.allow_emergency
+                else "."
+            )
+        ),
     }
 
 
@@ -390,51 +409,90 @@ async def cancel_proposal(proposal_id: str) -> dict:
         return _refuse(str(exc))
 
 
+UNKNOWN_OUTCOME_MESSAGE = (
+    "The request was sent but its result is UNKNOWN - FPL may or may not have applied it. "
+    "Check your team on the FPL website before doing anything else. Nothing will be retried."
+)
+
+
+def _outcome_unknown(proposals, proposal_id: str, why: str) -> dict:
+    proposals.finish(proposal_id, UNKNOWN, f"OUTCOME UNKNOWN: {why}"[:300])
+    return {"status": UNKNOWN, "reason": UNKNOWN_OUTCOME_MESSAGE}
+
+
 @mcp.tool()
 async def execute_approved_proposal(proposal_id: str) -> dict:
     """Execute a proposal the USER has already approved on the approval page.
 
-    Refuses if it is not approved, expired, already executed, or if the squad changed since the
-    proposal was made. With live writes disabled it records a dry run and sends nothing.
+    Refuses if it is not approved, expired, already executed, or if the squad, bank or gameweek
+    changed since the proposal was made. With live writes disabled it records a dry run and sends
+    nothing. All writers share one lock, so two changes can never act on the same squad snapshot.
     """
     settings = get_settings()
     proposals = get_proposals()
-    try:
-        proposal = proposals.begin_execute(proposal_id, settings)
-    except ApprovalError as exc:
-        return _refuse(str(exc))
+    async with execution_lock():
+        try:
+            proposal = proposals.begin_execute(proposal_id, settings)
+        except ApprovalError as exc:
+            return _refuse(str(exc))
 
-    try:
-        client = _get_client()
-        if client is None:
-            proposals.finish(proposal.id, FAILED, "not authenticated")
-            return _refuse("Not authenticated. Call login_to_fpl first.")
+        sent = False  # becomes True the instant before the POST; decides failed vs unknown
+        try:
+            client = _get_client()
+            if client is None:
+                proposals.finish(proposal.id, FAILED, "not authenticated")
+                return _refuse("Not authenticated. Call login_to_fpl first.")
 
-        # Drift guard: the squad / bank / gameweek must be exactly as it was when proposed.
-        entry_id = store.get_user_entry_id(client)
-        my_team = await client.get_my_team(entry_id)
-        event = next((e.id for e in store.bootstrap_data.events if e.is_next), None)
-        transfers = my_team.get("transfers") or {}
-        now_fp = squad_fingerprint(my_team.get("picks") or [], transfers.get("bank"), event)
-        if entry_id != proposal.entry_id or event != proposal.event or now_fp != proposal.fingerprint:
-            proposals.finish(proposal.id, FAILED, "squad changed since proposal; blocked")
-            return _refuse("Your squad, bank or gameweek changed since this was proposed. Create a new proposal.")
+            # Drift guard on FRESH data: re-fetch the gameweek table (an approval must not survive
+            # a deadline rollover) and the squad, and require both to match the proposal exactly.
+            await store.refresh_bootstrap_data(client)
+            entry_id = store.get_user_entry_id(client)
+            next_event = next((e for e in store.bootstrap_data.events if e.is_next), None)
+            event = next_event.id if next_event is not None else None
+            if event != proposal.event:
+                proposals.finish(proposal.id, FAILED, "gameweek changed since proposal; blocked")
+                return _refuse("The gameweek has rolled over since this was proposed. Create a new proposal.")
+            deadline = parse_deadline(getattr(next_event, "deadline_time", None))
+            if deadline is not None and _now() >= deadline:
+                proposals.finish(proposal.id, FAILED, "deadline passed; blocked")
+                return _refuse("The deadline for this gameweek has passed. Create a new proposal.")
 
-        if not settings.allow_writes:
-            note = f"DRY RUN: would POST to {proposal.endpoint}"
-            proposals.finish(proposal.id, DRY_RUN, note)
-            return {"status": DRY_RUN, "note": note, "would_send": proposal.payload}
+            my_team = await client.get_my_team(entry_id)
+            transfers = my_team.get("transfers") or {}
+            now_fp = squad_fingerprint(my_team.get("picks") or [], transfers.get("bank"), event)
+            if entry_id != proposal.entry_id or now_fp != proposal.fingerprint:
+                proposals.finish(proposal.id, FAILED, "squad changed since proposal; blocked")
+                return _refuse("Your squad or bank changed since this was proposed. Create a new proposal.")
 
-        if proposal.endpoint == "transfers/":
-            response = await client.post_transfers(proposal.payload)
-        else:
-            response = await client.post_my_team(proposal.entry_id, proposal.payload)
-        proposals.finish(proposal.id, EXECUTED, "accepted by FPL")
-        return {"status": EXECUTED, "fpl_response": response}
-    except (FPLAuthExpired, FPLAPIError) as exc:
-        proposals.finish(proposal.id, FAILED, str(exc)[:300])
-        return _safe_error(exc)
-    except Exception:  # noqa: BLE001
-        logger.exception("execution failed")
-        proposals.finish(proposal.id, FAILED, "unexpected error")
-        return _refuse("Unexpected error during execution. Check your FPL team before retrying.")
+            if not settings.allow_writes:
+                note = f"DRY RUN: would POST to {proposal.endpoint}"
+                proposals.finish(proposal.id, DRY_RUN, note)
+                return {"status": DRY_RUN, "note": note, "would_send": proposal.payload}
+
+            sent = True
+            if proposal.endpoint == "transfers/":
+                response = await client.post_transfers(proposal.payload)
+            else:
+                response = await client.post_my_team(proposal.entry_id, proposal.payload)
+            proposals.finish(proposal.id, EXECUTED, "accepted by FPL")
+            return {"status": EXECUTED, "fpl_response": response}
+        except FPLAuthExpired as exc:
+            proposals.finish(proposal.id, FAILED, str(exc)[:300])
+            return _safe_error(exc)
+        except FPLAPIError as exc:
+            if sent and exc.status >= 500:  # server error AFTER sending: it may still have applied
+                return _outcome_unknown(proposals, proposal.id, f"FPL answered {exc.status}")
+            proposals.finish(proposal.id, FAILED, str(exc)[:300])
+            return _safe_error(exc)
+        except asyncio.CancelledError:
+            if sent:
+                _outcome_unknown(proposals, proposal.id, "call cancelled mid-flight")
+            else:
+                proposals.finish(proposal.id, FAILED, "cancelled before sending")
+            raise
+        except Exception:  # noqa: BLE001
+            logger.exception("execution failed")
+            if sent:
+                return _outcome_unknown(proposals, proposal.id, "unexpected error after sending")
+            proposals.finish(proposal.id, FAILED, "unexpected error before sending")
+            return _refuse("Unexpected error before anything was sent. Nothing changed; try again.")

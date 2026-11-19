@@ -8,7 +8,7 @@ import threading
 
 import uvicorn
 
-from .config import ConfigError, get_settings, validate_for_startup
+from .config import ConfigError, get_settings, load_local_env, validate_for_startup
 from .security import BearerAuthMiddleware
 
 
@@ -38,6 +38,8 @@ def run_web_server(settings) -> None:
 def main() -> None:
     _configure_logging()
     log = logging.getLogger("fpl_main")
+    if load_local_env():
+        log.info("Loaded settings from ./.env")
     settings = get_settings()
     try:
         warnings = validate_for_startup(settings)
@@ -48,7 +50,7 @@ def main() -> None:
         log.warning(warning)
 
     # Importing registers every tool / resource / prompt on the shared FastMCP instance.
-    from . import mcp_prompts, mcp_resources, mcp_write_tools  # noqa: F401
+    from . import mcp_emergency_tools, mcp_prompts, mcp_resources, mcp_write_tools  # noqa: F401
     from .mcp_tools import mcp
 
     threading.Thread(target=run_web_server, args=(settings,), daemon=True, name="web").start()

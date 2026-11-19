@@ -105,3 +105,39 @@ def test_bad_values_fail_closed(clean_env):
 def test_loopback_detection():
     assert is_loopback_host("127.0.0.1") and is_loopback_host("::1") and is_loopback_host("localhost")
     assert not is_loopback_host("0.0.0.0") and not is_loopback_host("10.0.0.5")  # noqa: S104
+
+
+def test_emergency_exception_is_off_by_default_and_bounded(clean_env):
+    s = get_settings()
+    assert s.allow_emergency is False and s.emergency_max_per_gameweek == 2
+    clean_env.setenv("FPL_EMERGENCY_MAX_PER_GAMEWEEK", "6")
+    with pytest.raises(ConfigError):
+        get_settings()
+    clean_env.setenv("FPL_EMERGENCY_MAX_PER_GAMEWEEK", "0")
+    with pytest.raises(ConfigError):
+        get_settings()
+
+
+def test_startup_warns_loudly_when_unapproved_emergency_swaps_are_enabled(clean_env):
+    clean_env.setenv("FPL_ALLOW_EMERGENCY", "true")
+    warnings = validate_for_startup(get_settings())
+    assert any("WITHOUT human approval" in w for w in warnings)
+    clean_env.delenv("FPL_ALLOW_EMERGENCY")
+    assert not any("WITHOUT human approval" in w for w in validate_for_startup(get_settings()))
+
+
+def test_dotenv_is_loaded_but_never_overrides_the_real_environment(tmp_path, clean_env):
+    import os
+
+    from fpl_server.config import load_local_env
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("FPL_MAX_POINTS_HIT=8\nFPL_ALLOW_EMERGENCY=true\n", encoding="utf-8")
+    clean_env.setenv("FPL_ALLOW_EMERGENCY", "false")  # a real env var must win over the file
+    try:
+        assert load_local_env(env_file) is True
+        assert get_settings().max_points_hit == 8
+        assert get_settings().allow_emergency is False
+    finally:
+        os.environ.pop("FPL_MAX_POINTS_HIT", None)
+    assert load_local_env(tmp_path / "missing.env") is False

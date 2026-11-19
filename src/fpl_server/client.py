@@ -1,5 +1,8 @@
 import asyncio
 import logging
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 import httpx
@@ -12,6 +15,31 @@ if TYPE_CHECKING:
 logger = logging.getLogger("fpl_client")
 
 _RETRY_STATUSES = {429, 500, 502, 503, 504}
+
+
+@dataclass(frozen=True)
+class ServerClock:
+    """What FPL's own response headers said about time and data freshness."""
+
+    server_time: datetime | None  # parsed HTTP Date header (UTC)
+    received_at: datetime  # our clock when it arrived (UTC)
+    age_seconds: int  # CDN cache age of the response (0 if no Age header)
+
+
+def _server_clock(response) -> ServerClock:
+    server_time = None
+    try:
+        raw = response.headers.get("date")
+        if raw:
+            parsed = parsedate_to_datetime(raw)
+            server_time = parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        server_time = None
+    try:
+        age = int(response.headers.get("age", "0"))
+    except (TypeError, ValueError):
+        age = 10**6  # unparseable => treat as stale
+    return ServerClock(server_time, datetime.now(timezone.utc), max(0, age))
 
 
 class FPLAPIError(RuntimeError):
@@ -36,6 +64,7 @@ class FPLClient:
         self.team_id: Optional[int] = None
         self.user_info: Optional[Dict[str, Any]] = None  # Store user info from /me
         self._store = store
+        self.bootstrap_clock: Optional[ServerClock] = None  # freshness of the last bootstrap fetch
 
     def set_api_token(self, token: str):
         if not token.startswith("Bearer "):
@@ -77,15 +106,24 @@ class FPLClient:
                 continue
             break
 
+        self._last_clock = _server_clock(response)
         if response.status_code in (401, 403) and self.api_token:
             raise FPLAuthExpired(response.status_code, "session rejected; log in again")
         if response.status_code >= 400:
             raise FPLAPIError(response.status_code, response.text[:300])
+        if method != "GET":
+            # The change was accepted. An empty / non-JSON body must not be reported as a failure.
+            try:
+                return response.json()
+            except ValueError:
+                return {"status_code": response.status_code, "note": "accepted; non-JSON body"}
         return response.json()
 
     async def get_bootstrap_data(self) -> Dict[str, Any]:
         """Fetch fresh bootstrap data from API"""
-        return await self._request("GET", "bootstrap-static/")
+        data = await self._request("GET", "bootstrap-static/")
+        self.bootstrap_clock = self._last_clock
+        return data
     
     async def get_bootstrap_static(self) -> Dict[str, Any]:
         """Alias used by SessionStore.ensure_bootstrap_data (upstream called a missing name)."""

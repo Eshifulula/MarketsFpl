@@ -76,11 +76,19 @@ jobs:
           persist-credentials: false
       - name: Build
         run: docker build --pull -t markets-fpl:ci .
-      - name: Image runs as non-root and refuses an unsafe config
+      - name: Image runs as a non-root user
         run: |
-          test "$(docker run --rm --entrypoint id markets-fpl:ci -u)" != "0"
-          # HTTP transport without a bearer token must fail closed (exit code 2).
-          set +e
-          docker run --rm -e FPL_MCP_TRANSPORT=streamable-http markets-fpl:ci
-          code=$?
+          # Capture on its own line: a failing `docker run` must stop the step (bash -e), not
+          # leave an empty string that would pass a "!= 0" comparison.
+          uid="$(docker run --rm --entrypoint id markets-fpl:ci -u)"
+          case "$uid" in
+            ''|*[!0-9]*) echo "could not read a numeric uid (got '$uid')"; exit 1 ;;
+          esac
+          test "$uid" -ne 0
+      - name: Image refuses an unsafe config (HTTP transport without a bearer token)
+        run: |
+          code=0
+          out="$(docker run --rm -e FPL_MCP_TRANSPORT=streamable-http markets-fpl:ci 2>&1)" || code=$?
+          echo "$out"
           test "$code" -eq 2
+          echo "$out" | grep -q "Refusing to start"

@@ -3,8 +3,8 @@
 Both are pure decision logic (no FPL access, no network). They FAIL CLOSED: anything missing,
 mistyped or unverified is a denial.
 
-NOTE: these are not yet wired into the MCP execution path. Live execution is still governed by
-`approvals.py` (PIN on the local page) + `FPL_ALLOW_WRITES`. See docs/SECURITY_MODEL.md.
+SafetyPolicy is used by the emergency tool (mcp_emergency_tools.py). ApprovalGate is tested but
+not used by the live path (the PIN approval page in approvals.py is). See docs/SECURITY_MODEL.md.
 """
 
 from __future__ import annotations

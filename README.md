@@ -1,7 +1,8 @@
 # MarketsFpl
 
 An **approval-gated Fantasy Premier League MCP server**: let an AI assistant research, analyse and
-*propose* changes to your FPL team - while only a human can approve them.
+*propose* changes to your FPL team - while only a human can approve them (one narrow, opt-in,
+off-by-default emergency exception aside).
 
 Hardened fork of [lewis-king/fpl-mcp-server](https://github.com/lewis-king/fpl-mcp-server) (MIT).
 See [NOTICE.md](NOTICE.md).
@@ -17,9 +18,13 @@ See [NOTICE.md](NOTICE.md).
   `propose_chip`.
 * **`execute_approved_proposal`**: runs a proposal *only after you approved it* on a local page with
   a PIN. There is no tool that approves.
+* **`emergency_lineup_swap`** (off unless `FPL_ALLOW_EMERGENCY=true`): the one exception - in the
+  last 15 minutes before a verified deadline it may swap a confirmed suspended / ruled-out starter
+  for an available bench player. No transfers, chips, points or captaincy; everything is verified
+  server-side. See [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md).
 * Guardrails: rule validation (budget, 3-per-club, formation, chip windows), transfer / points-hit
-  caps, strict player resolution (no fuzzy guessing on writes), drift guard, single-use, expiry,
-  audit log.
+  caps, strict player resolution (no fuzzy guessing on writes), drift guard, one write lock,
+  single-use, expiry, unknown-outcome handling, audit log.
 
 ```
 Assistant ──propose_*──▶ MarketsFpl ──▶ pending proposal
@@ -32,7 +37,7 @@ Assistant ──execute_approved_proposal───▶ drift check ─▶ (dry ru
 
 ```bash
 uv sync
-cp .env.example .env          # local only; git-ignored
+cp .env.example .env          # local only; git-ignored; loaded automatically from the current directory
 uv run python -m fpl_server.main
 ```
 

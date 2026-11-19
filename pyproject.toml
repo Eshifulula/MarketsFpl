@@ -14,6 +14,7 @@ dependencies = [
     "pydantic>=2.0",
     "python-multipart>=0.0.9",
     "beautifulsoup4>=4.12",
+    "python-dotenv>=1.0",
 ]
 
 [project.scripts]
@@ -53,6 +54,7 @@ ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101", "S105", "S106"]
+"tests/test_execution_guard.py" = ["S101", "S105", "S106", "F811"]  # imports shared fixtures
 # Carried-over upstream code: keep correctness checks, skip stylistic/security-lint noise.
 "src/fpl_server/mcp_tools.py" = ["E", "W", "I", "B", "S"]
 "src/fpl_server/mcp_resources.py" = ["E", "W", "I", "B", "S"]

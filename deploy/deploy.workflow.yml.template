@@ -18,6 +18,11 @@ on:
 permissions:
   contents: read
 
+# Never run two deployments at once, and never cancel one halfway through.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
 jobs:
   deploy:
     if: ${{ vars.DEPLOY_ENABLED == 'true' }}
@@ -41,9 +46,9 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
           printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
           docker save markets-fpl:${{ github.sha }} \
-            | ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" \
-                "docker load && docker tag markets-fpl:${{ github.sha }} markets-fpl:current"
-          # The restart script on the VPS owns the runtime secrets (FPL_APPROVAL_PIN,
-          # FPL_MCP_BEARER_TOKEN). They are never passed through GitHub.
+            | ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" "docker load"
+          # The restart script receives the EXACT commit-tagged image, so a shared mutable tag
+          # can never point it at a different build. It owns the runtime secrets
+          # (FPL_APPROVAL_PIN, FPL_MCP_BEARER_TOKEN); they are never passed through GitHub.
           ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" \
-            "/opt/markets-fpl/restart.sh"
+            "/opt/markets-fpl/restart.sh markets-fpl:${{ github.sha }}"
