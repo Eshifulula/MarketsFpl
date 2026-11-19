@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+
+# SECRETS & RUNTIME STATE - this repo is PUBLIC. Never commit any of these.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+id_rsa*
+id_ed25519*
+secrets/
+*.secret
+audit/
+*.audit.jsonl
+*.db
+*.sqlite
+*.log
+
+# Debug artefacts (the upstream auth code used to write screenshots)
+*.png
+!docs/**/*.png
+
+# Local tooling
+.claude/
+graphify-out/
+.vscode/
+.idea/
+.DS_Store
