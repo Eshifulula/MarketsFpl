@@ -6,7 +6,11 @@ COPY --from=ghcr.io/astral-sh/uv:0.11.24 /uv /usr/local/bin/uv
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy PYTHONUNBUFFERED=1 \
     PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
 
-RUN useradd --create-home --uid 10001 app
+# Playwright's bundled Node driver needs libatomic before `playwright install --with-deps` can run.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libatomic1 \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd --create-home --uid 10001 app
 WORKDIR /app
 
 COPY pyproject.toml uv.lock README.md LICENSE ./
