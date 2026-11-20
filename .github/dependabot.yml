@@ -6,6 +6,14 @@ updates:
   - package-ecosystem: uv
     directory: /
     schedule: { interval: weekly }
+    ignore:
+      # mcp 2.x renamed FastMCP and changed the server APIs. Migrate deliberately, not via a bot PR.
+      - dependency-name: mcp
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: docker
     directory: /
     schedule: { interval: weekly }
+    ignore:
+      # CI and the lockfile target Python 3.11/3.12. Move the base image deliberately (3.13 next).
+      - dependency-name: python
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
