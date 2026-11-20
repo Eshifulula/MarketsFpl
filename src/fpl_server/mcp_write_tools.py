@@ -452,8 +452,13 @@ async def execute_approved_proposal(proposal_id: str) -> dict:
             if event != proposal.event:
                 proposals.finish(proposal.id, FAILED, "gameweek changed since proposal; blocked")
                 return _refuse("The gameweek has rolled over since this was proposed. Create a new proposal.")
+            # A missing or unparseable deadline fails closed: without it we cannot prove the
+            # window is still open, so nothing is sent.
             deadline = parse_deadline(getattr(next_event, "deadline_time", None))
-            if deadline is not None and _now() >= deadline:
+            if deadline is None:
+                proposals.finish(proposal.id, FAILED, "deadline unknown; blocked")
+                return _refuse("Could not verify this gameweek's deadline. Nothing was sent.")
+            if _now() >= deadline:
                 proposals.finish(proposal.id, FAILED, "deadline passed; blocked")
                 return _refuse("The deadline for this gameweek has passed. Create a new proposal.")
 
@@ -463,6 +468,11 @@ async def execute_approved_proposal(proposal_id: str) -> dict:
             if entry_id != proposal.entry_id or now_fp != proposal.fingerprint:
                 proposals.finish(proposal.id, FAILED, "squad changed since proposal; blocked")
                 return _refuse("Your squad or bank changed since this was proposed. Create a new proposal.")
+
+            # The squad read above can be slow: re-check the deadline immediately before acting.
+            if _now() >= deadline:
+                proposals.finish(proposal.id, FAILED, "deadline passed during checks; blocked")
+                return _refuse("The deadline passed while checking your squad. Nothing was sent.")
 
             if not settings.allow_writes:
                 note = f"DRY RUN: would POST to {proposal.endpoint}"

@@ -58,6 +58,48 @@ async def test_execution_after_the_deadline_is_refused(fpl, proposals, monkeypat
     assert fpl.posts == []
 
 
+@pytest.mark.parametrize("bad", [None, "", "not-a-date", 12345])
+async def test_missing_or_unparseable_deadline_blocks_execution(fpl, proposals, monkeypatch, bad):
+    settings = _live(monkeypatch)
+    r = await wt.propose_captain("MID10", "MID9")
+    _approve(proposals, settings, r["proposal_id"])
+    monkeypatch.setattr(
+        store,
+        "bootstrap_data",
+        _events(SimpleNamespace(id=12, is_next=True, deadline_time=bad)),
+        raising=False,
+    )
+    out = await wt.execute_approved_proposal(r["proposal_id"])
+    assert out["status"] == "refused" and "deadline" in out["reason"]
+    assert fpl.posts == [] and proposals.get(r["proposal_id"]).status == "failed"
+
+
+async def test_deadline_passing_during_the_squad_read_blocks_the_post(fpl, proposals, monkeypatch):
+    settings = _live(monkeypatch)
+    monkeypatch.setattr(
+        store,
+        "bootstrap_data",
+        _events(SimpleNamespace(id=12, is_next=True, deadline_time="2026-11-21T11:00:00Z")),
+        raising=False,
+    )
+    r = await wt.propose_captain("MID10", "MID9")
+    _approve(proposals, settings, r["proposal_id"])
+
+    clock = {"now": datetime(2026, 11, 21, 10, 59, 59, tzinfo=UTC)}  # 1s before the deadline
+    monkeypatch.setattr(wt, "_now", lambda: clock["now"])
+    real_get_my_team = fpl.get_my_team
+
+    async def slow_get_my_team(entry):
+        result = await real_get_my_team(entry)
+        clock["now"] = AFTER_DEADLINE  # the read started in time but finished after the deadline
+        return result
+
+    monkeypatch.setattr(fpl, "get_my_team", slow_get_my_team)
+    out = await wt.execute_approved_proposal(r["proposal_id"])
+    assert out["status"] == "refused" and "deadline" in out["reason"]
+    assert fpl.posts == [] and proposals.get(r["proposal_id"]).status == "failed"
+
+
 async def test_a_new_proposal_cancels_an_approved_but_unexecuted_one(fpl, proposals, monkeypatch):
     settings = _live(monkeypatch)
     first = await wt.propose_captain("MID10", "MID9")

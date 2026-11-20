@@ -53,7 +53,10 @@ def fpl(world, proposals, monkeypatch):
     monkeypatch.setattr(wt, "_players_from_bootstrap", lambda: world["players"])
     monkeypatch.setattr(store, "refresh_bootstrap_data", refresh)
     monkeypatch.setattr(
-        store, "bootstrap_data", SimpleNamespace(events=[SimpleNamespace(id=12, is_next=True)]), raising=False
+        store,
+        "bootstrap_data",
+        SimpleNamespace(events=[SimpleNamespace(id=12, is_next=True, deadline_time="2099-01-01T00:00:00Z")]),
+        raising=False,
     )
     return client
 
